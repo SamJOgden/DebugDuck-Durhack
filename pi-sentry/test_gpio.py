@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Quick test to check gpiod access"""
 import gpiod
+from gpiod.line import Direction, Edge
 
-print("Testing gpiod access...")
+print("Testing gpiod 2.x access...")
+print(f"gpiod version: {gpiod.__version__}")
 
 for chip_name in ['/dev/gpiochip4', '/dev/gpiochip0', '/dev/gpiochip1']:
     try:
@@ -10,20 +12,20 @@ for chip_name in ['/dev/gpiochip4', '/dev/gpiochip0', '/dev/gpiochip1']:
         chip = gpiod.Chip(chip_name)
         print(f"  ✅ Chip opened successfully")
 
-        # Try to get GPIO 17
-        line = chip.get_line(17)
-        print(f"  ✅ Got line 17")
+        # Try to request GPIO 17 with gpiod 2.x API
+        line_config = {17: gpiod.LineSettings(direction=Direction.INPUT, edge_detection=Edge.RISING)}
+        request = chip.request_lines(consumer="test", config=line_config)
+        print(f"  ✅ Successfully requested GPIO 17 for rising edge events")
 
-        # Try to request it
-        line.request(consumer="test", type=gpiod.LINE_REQ_EV_RISING_EDGE)
-        print(f"  ✅ Successfully requested line 17 for rising edge events")
-
-        line.release()
+        request.release()
         chip.close()
         print(f"  ✅ {chip_name} works perfectly!")
+        print(f"\n🎉 SUCCESS! Use {chip_name} for GPIO")
         break
 
     except Exception as e:
         print(f"  ❌ Failed: {type(e).__name__}: {e}")
+        import traceback
+        traceback.print_exc()
 
 print("\nDone!")

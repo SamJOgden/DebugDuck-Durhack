@@ -6,6 +6,7 @@ Listens for physical button presses and triggers help requests to laptop
 # Try to import gpiod (for Pi 5), fall back to RPi.GPIO (for older Pi)
 try:
     import gpiod
+    from gpiod.line import Direction, Edge
     GPIO_LIB = 'gpiod'
 except ImportError:
     try:
@@ -61,14 +62,21 @@ class ButtonListener:
         """Set up GPIO pins for button"""
         try:
             if GPIO_LIB == 'gpiod':
-                # Raspberry Pi 5 - use gpiod
+                # Raspberry Pi 5 - use gpiod 2.x API
                 # Try to find the correct gpiochip
                 chip_found = False
                 for chip_name in ['/dev/gpiochip4', '/dev/gpiochip0', '/dev/gpiochip1']:
                     try:
                         self.chip = gpiod.Chip(chip_name)
-                        self.line = self.chip.get_line(BUTTON_PIN)
-                        self.line.request(consumer="button_listener", type=gpiod.LINE_REQ_EV_RISING_EDGE)
+                        # Request GPIO line with gpiod 2.x API
+                        line_config = {BUTTON_PIN: gpiod.LineSettings(
+                            direction=Direction.INPUT,
+                            edge_detection=Edge.RISING
+                        )}
+                        self.request = self.chip.request_lines(
+                            consumer="button_listener",
+                            config=line_config
+                        )
                         logger.info(f"✅ GPIO initialized with gpiod ({chip_name}): Button on GPIO {BUTTON_PIN}")
                         chip_found = True
                         break
@@ -147,13 +155,14 @@ class ButtonListener:
 
         try:
             if GPIO_LIB == 'gpiod':
-                # gpiod monitoring loop
+                # gpiod 2.x monitoring loop
                 while self.running:
-                    # Wait for event with timeout
-                    if self.line.event_wait(nsec=1000000000):  # 1 second timeout in nanoseconds
-                        event = self.line.event_read()
-                        if event.type == gpiod.LineEvent.RISING_EDGE:
-                            self._handle_button_press()
+                    # Wait for edge events with timeout (1 second)
+                    if self.request.wait_edge_events(timeout=1.0):
+                        events = self.request.read_edge_events()
+                        for event in events:
+                            if event.event_type == event.Type.RISING_EDGE:
+                                self._handle_button_press()
 
             elif GPIO_LIB == 'RPi.GPIO':
                 # RPi.GPIO monitoring loop
@@ -198,8 +207,8 @@ class ButtonListener:
         # Clean up GPIO
         try:
             if GPIO_LIB == 'gpiod':
-                if hasattr(self, 'line'):
-                    self.line.release()
+                if hasattr(self, 'request'):
+                    self.request.release()
                 if hasattr(self, 'chip'):
                     self.chip.close()
             elif GPIO_LIB == 'RPi.GPIO':
