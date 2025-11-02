@@ -1,0 +1,10 @@
+Flask>=3.0.0
+mss>=9.0.1
+pytesseract>=0.3.10
+Pillow>=10.1.0
+python-dotenv>=1.0.0
+requests>=2.31.0
+
+# Optional for Phase 3 (voice input)
+# sounddevice==0.4.6
+# vosk==0.3.45

@@ -1,0 +1,402 @@
+1. Product Requirements Document: The Animated Debug Duck
+
+Project:	The Animated Debug Duck
+Status:	Final PRD for Hackathon Build	Date:	2025-11-01
+
+2. Overview
+
+The "Debug Duck" is an interactive, AI-powered desk companion designed to support developers. It lives on a Raspberry Pi-powered touchscreen, acting as an empathetic "sentry" and an on-demand "assistant."
+
+It has two modes:
+
+    Proactive Emotional Support: It uses the Pi Camera and a local Facial Emotion Recognition (FER) model to sense when the user is frustrated. It then proactively speaks a comforting or distracting phrase to help the user reset.
+
+    Reactive Coding Help: The user can press a physical button to ask the duck for help. A "client" script on the user's laptop takes a screenshot, runs OCR to read the code, and uses the laptop's mic to transcribe the user's question. This context is sent to an LLM (like Claude 3.5 Sonnet), and the duck speaks the answer.
+
+3. The Problem
+
+Coding is an isolating and often frustrating experience.
+
+    Emotional Toll: Developers (especially students) experience "bug rage" and frustration, leading to burnout. There's no immediate, non-judgmental outlet for this emotion.
+
+    Cognitive Load: When stuck, a developer must break their "flow state," context-switch to a browser, type in their problem, and sift through results. This is highly disruptive.
+
+4. The Solution: A Phased User Story
+
+Phase 1 (MVP - The Empathetic Sentry):
+
+    You are coding and hit a wall. You've been staring at a bug for 10 minutes, and you're visibly frustrated.
+
+    The Pi Camera on the duck's "sentry" device detects this.
+
+    On the 7" screen, the duck's animation changes from "neutral" to "concerned."
+
+    You hear a voice from your Anker speaker: "Hey, that looks like a tough one. Remember to take a deep breath. You're smarter than this bug."
+
+Phase 2 (MVP+ - The Connected Coder):
+
+    You're looking at a bug. You press the physical button (DFR0029) on your desk.
+
+    The duck's animation changes to "listening."
+
+    A script on your laptop instantly takes a screenshot of your code and runs OCR.
+
+    It sends this code to Claude 3.5 Sonnet for analysis.
+
+    A few seconds later, the duck speaks: "I see your code. It looks like that for loop might be one-off. Check your range bounds."
+
+Phase 3 (Stretch Goal - The "AI Rubber Duck"):
+
+    You're stuck. You press and hold the physical button.
+
+    The duck's animation changes to "listening."
+
+    Your laptop mic activates. You say: "Why am I getting a 'NoneType' error on this line?"
+
+    The laptop script transcribes your voice, takes a screenshot, and sends both to Claude.
+
+    The duck speaks: "You asked about the 'NoneType' error. Looking at your code, it seems the variable user_profile is None because the database query on line 20 returned no results. You should add a check for that."
+
+5. Technical Architecture: Sentry/Client Model
+
+This project is split into two components that communicate over your local WiFi.
+
+A. "The Sentry" (Raspberry Pi + 7" Screen)
+
+    Job: The physical, emotional companion. Handles all physical I/O.
+
+    Hardware:
+
+        Raspberry Pi
+
+        7" Touchscreen (for GUI)
+
+        Pi Camera (for FER)
+
+        Anker Soundcore Speaker (via 3.5mm jack for TTS)
+
+        DFR0029 Push Button (via GPIO pins)
+
+    Local Software:
+
+        OS: Raspberry Pi OS with Desktop.
+
+        GUI: A Pygame or Kivy app to display the animated duck (duck_neutral.png, duck_concerned.png, duck_listening.png).
+
+        FER: OpenCV + a TFLite FER model to run a local, passive emotion detection loop.
+
+        TTS: Piper-TTS to run fast, high-quality local text-to-speech.
+
+        Server: A Flask web server to listen for commands from the laptop.
+
+B. "The Client" (Your Laptop/PC)
+
+    Job: The "brains" for coding help. It's invisible and runs in the background.
+
+    Hardware:
+
+        Your laptop's built-in Microphone.
+
+    Software (Python Script):
+
+        STT: Vosk or Whisper.cpp to run local, real-time speech-to-text from the mic.
+
+        OCR: mss (for fast screenshots) + pytesseract (for simple, accurate OCR on clean text).
+
+        LLM Router: The openrouter-python library to make all API calls.
+
+        Server: A Flask server to listen for the "get help" trigger from the Pi's button.
+
+6. Hardware & Electronics Plan
+
+    Raspberry Pi Assembly:
+
+        Connect the 7" Touchscreen to the Pi's DSI port (ribbon cable) and power pins.
+
+        Connect the Pi Camera to the Pi's CSI port (ribbon cable).
+
+        Plug the Anker Soundcore speaker into the Pi's 3.5mm audio jack.
+
+        Mount the Pi to the back of the touchscreen.
+
+    Button Circuit (Breadboard):
+
+        The DFR0029 module is digital and needs no resistor.
+
+        Connect Pin 1 (3.3V) on the Pi -> + (VCC) pin on the DFR0029 module.
+
+        Connect Pin 6 (GND) on the Pi -> - (GND) pin on the DFR0029 module.
+
+        Connect Pin 11 (GPIO 17) on the Pi -> D (Signal) pin on the DFR0029 module.
+
+    Python Code to Read the Button (on the Pi):
+    Python
+
+    import RPi.GPIO as GPIO
+    import time
+    import requests
+
+    # Use BCM pin numbering
+    GPIO.setmode(GPIO.BCM)
+
+    # Set up GPIO 17 as an input. It is pulled down by default.
+    # The DFR0029 module outputs HIGH when pressed.
+    BUTTON_PIN = 17
+    GPIO.setup(BUTTON_PIN, GPIO.IN, pull_up_down=GPIO.PUD_DOWN)
+
+    print("Button listener started. Press the button to get help.")
+
+    # URL of your laptop's client script
+    LAPTOP_CLIENT_URL = "http://YOUR_LAPTOP_IP:5001/get-help" 
+
+    try:
+        while True:
+            # Wait for the button to be pressed (rising edge detection)
+            GPIO.wait_for_edge(BUTTON_PIN, GPIO.RISING)
+
+            print("Button pressed! Requesting help...")
+
+            try:
+                # Send the "get help" trigger to the laptop
+                requests.get(LAPTOP_CLIENT_URL)
+            except requests.ConnectionError:
+                print("Error: Could not connect to laptop client.")
+
+            # Simple debounce
+            time.sleep(1) 
+
+    except KeyboardInterrupt:
+        print("Cleaning up GPIO...")
+        GPIO.cleanup()
+
+7. Software Development Plan
+
+A. On the Pi (The "Sentry")
+
+    fer_service.py (Phase 1):
+
+        Uses OpenCV to capture frames from the PiCamera.
+
+        Detects a face in each frame.
+
+        Runs the TFLite FER model on the face region.
+
+        Maintains a "frustration counter." If emotion == "frustration", counter++.
+
+        If counter > 100 (e.g., ~10 seconds), make a requests.get("http://localhost:5000/trigger-empathy") and reset the counter.
+
+    tts_service.py (Phase 1):
+
+        A simple Python wrapper for the piper-tts command-line tool.
+
+        def speak(text_to_speak):
+
+        os.system(f'echo "{text_to_speak}" | piper --model en_US-lessac-medium.onnx --output_file - | aplay')
+
+    duck_gui.py (Phase 1):
+
+        A Pygame app that runs full-screen on the 7" display.
+
+        Loads duck_neutral.png, duck_concerned.png, duck_listening.png.
+
+        def set_emotion(emotion_state): # e.g., "neutral", "concerned"
+
+        Main loop just blits the current duck animation to the screen.
+
+    sentry_server.py (Phase 1 & 2):
+
+        The central Flask server on the Pi.
+
+        @app.route('/trigger-empathy', methods=['GET'])
+
+            Calls the LLMRouter (on the Pi) to get a comforting phrase.
+
+            Calls duck_gui.set_emotion("concerned").
+
+            Calls tts_service.speak(phrase).
+
+        @app.route('/speak', methods=['POST']) (Phase 2)
+
+            This is the endpoint your laptop calls.
+
+            text = request.json['text']
+
+            tts_service.speak(text)
+
+    button_listener.py (Phase 2):
+
+        The GPIO script from Section 6. It runs in the background.
+
+B. On the Laptop (The "Client")
+
+    client_server.py (Phase 2 & 3):
+
+        The central Flask server on your laptop.
+
+        llm_router = LLMRouter()
+
+        @app.route('/get-help', methods=['GET'])
+
+            Calls code_text = ocr_service.capture_and_ocr()
+
+            (Phase 3) Calls user_question = stt_service.listen_and_transcribe()
+
+            Calls answer = llm_router.get_contextual_help(code_text, user_question)
+
+            Sends the answer back to the Pi: requests.post("http://PI_IP:5000/speak", json={"text": answer})
+
+    ocr_service.py (Phase 2):
+
+        import mss
+
+        import pytesseract
+
+        def capture_and_ocr():
+
+        Uses mss.mss() to grab a screenshot.
+
+        Returns pytesseract.image_to_string(screenshot).
+
+    stt_service.py (Phase 3):
+
+        import vosk
+
+        import sounddevice as sd
+
+        def listen_and_transcribe():
+
+        Opens the laptop's default mic stream.
+
+        Listens for 5 seconds.
+
+        Feeds the audio to a Vosk model and returns the transcribed text.
+
+    llm_router.py (The "Claude Code")
+
+        This is your core AI logic, using OpenRouter to access multiple models.
+    Python
+
+# This is your "Client" (Laptop) script
+# Make sure to run: pip install openrouter-python
+
+from openrouter import Client
+import os
+
+# Get your API key from https://openrouter.ai/keys
+# Best practice: set this as an environment variable
+OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
+
+# This is your "Referrer" URL. Set it to your GitHub repo or project page.
+# It's good practice for OpenRouter to identify your app.
+YOUR_APP_URL = "http://github.com/your-username/debug-duck"
+
+class LLMRouter:
+    def __init__(self):
+        if not OPENROUTER_API_KEY:
+            raise ValueError("OPENROUTER_API_KEY not set in environment variables.")
+        self.client = Client(
+            api_key=OPENROUTER_API_KEY,
+            site_url=YOUR_APP_URL 
+        )
+
+    def get_comforting_phrase(self):
+        """
+        Phase 1: Calls a creative/roleplay model for an empathetic phrase.
+        This runs on the Pi's server.
+        """
+        print("Getting comforting phrase...")
+        try:
+            response = self.client.chat.completions.create(
+                model="deepseek/deepseek-chat", # Good, fast, creative model
+                messages=[
+                    {
+                        "role": "system",
+                        "content": ("You are an empathetic, cute, and slightly quirky Debug Duck. "
+                                    "A developer is visibly frustrated with their code. "
+                                    "Your job is to proactively say one short, comforting, "
+                                    "or funny distracting sentence (less than 15 words) "
+                                    "to help them reset. DO NOT offer coding help. "
+                                    "Just be a friend.")
+                    },
+                    {"role": "user", "content": "Get me a comforting phrase for a frustrated developer."}
+                ],
+                max_tokens=50,
+                temperature=1.2, # High temperature for more creative/varied responses
+            )
+            return response.choices[0].message.content
+        except Exception as e:
+            print(f"Error calling OpenRouter: {e}")
+            return "You've got this. I believe in you!"
+
+    def get_coding_help(self, code_text):
+        """
+        Phase 2: Calls a coding model with only OCR'd code.
+        This runs on the Laptop client.
+        """
+        print("Getting coding help for OCR'd text...")
+        try:
+            response = self.client.chat.completions.create(
+                model="anthropic/claude-3.5-sonnet", # Best-in-class coding model
+                messages=[
+                    {
+                        "role": "system",
+                        "content": ("You are an expert AI Debug Duck. You are helping a developer. "
+                                    "You will be given a block of code from their screen. "
+                                    "Concisely (in 2-3 sentences) identify the most likely bug "
+                                    "and suggest a fix. Speak in a helpful, friendly tone.")
+                    },
+                    {"role": "user", "content": f"Here is the code I'm looking at:\n\n{code_text}"}
+                ],
+                max_tokens=150,
+                temperature=0.3, # Low temperature for factual, precise code analysis
+            )
+            return response.choices[0].message.content
+        except Exception as e:
+            print(f"Error calling OpenRouter: {e}")
+            return "Sorry, I had trouble reading that code. Maybe try again?"
+
+    def get_contextual_help(self, code_text, user_question):
+        """
+        Phase 3: Calls a coding model with BOTH code and a spoken question.
+        This runs on the Laptop client.
+        """
+        print("Getting contextual help for OCR + STT...")
+        try:
+            response = self.client.chat.completions.create(
+                model="anthropic/claude-3.5-sonnet",
+                messages=[
+                    {
+                        "role": "system",
+                        "content": ("You are an expert AI Debug Duck. You are helping a developer. "
+                                    "You will be given their spoken question AND the code on their screen. "
+                                    "Directly answer their question, using the code for context. "
+                                    "Be concise, helpful, and friendly. Speak as a companion.")
+                    },
+                    {
+                        "role": "user", 
+                        "content": (f"My question is: '{user_question}'\n\n"
+                                    f"Here is the code on my screen:\n{code_text}")
+                    }
+                ],
+                max_tokens=150,
+                temperature=0.3,
+            )
+            return response.choices[0].message.content
+        except Exception as e:
+            print(f"Error calling OpenRouter: {e}")
+            return "Sorry, I had trouble understanding. Could you ask again?"
+
+# Example of how the laptop script would use this:
+if __name__ == "__main__":
+    router = LLMRouter()
+
+    # Test Phase 1 (run this on the Pi)
+    # comfort_phrase = router.get_comforting_phrase()
+    # print(f"Duck says: {comfort_phrase}")
+
+    # Test Phase 3 (run this on the laptop)
+    mock_code = "for i in range(len(my_list)):\n    print(my_list[i+1])"
+    mock_question = "Why am I getting an 'index out of range' error?"
+
+    help_text = router.get_contextual_help(mock_code, mock_question)
+    print(f"Duck says: {help_text}")

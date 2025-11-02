@@ -1,0 +1,37 @@
+# Debug Duck Pi-Sentry Requirements
+# Install with: pip3 install -r requirements.txt --break-system-packages
+
+# Web Framework
+Flask>=3.0.0
+
+# Camera (must be built from source - see SSH_COMMANDS.md)
+# picamera2 - install separately from source
+
+# Computer Vision
+opencv-python>=4.8.0
+numpy>=1.24.0
+
+# Machine Learning
+tensorflow>=2.13.0
+
+# LLM Integration
+openai>=1.0.0
+python-dotenv>=1.0.0
+requests>=2.31.0
+
+# GPIO for button
+# RPi.GPIO - usually pre-installed on Raspberry Pi OS
+# If missing: sudo apt install python3-rpi.gpio
+
+# GUI
+# pygame - install via apt: sudo apt install python3-pygame
+
+# Text-to-Speech (Piper)
+# Piper is a standalone binary, not a Python package
+# Download separately - see setup_pi.sh
+
+# Audio
+# alsa-utils - install via apt: sudo apt install alsa-utils
+
+# Development/Testing
+pytest>=7.4.0
