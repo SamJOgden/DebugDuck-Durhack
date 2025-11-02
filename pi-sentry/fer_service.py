@@ -19,6 +19,9 @@ import threading
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Reduce picamera2 noise
+logging.getLogger('picamera2').setLevel(logging.WARNING)
+
 # Load environment variables
 load_dotenv()
 
@@ -27,7 +30,7 @@ EMOTION_MODEL_PATH = os.environ.get("EMOTION_MODEL_PATH", "assets/emotion-model.
 FACE_CASCADE_PATH = os.environ.get("FACE_CASCADE_PATH", "haarcascade_frontalface_default.xml")
 FRUSTRATION_THRESHOLD = int(os.environ.get("FER_FRUSTRATION_THRESHOLD", 100))
 FRAME_SKIP = int(os.environ.get("FER_FRAME_SKIP", 2))
-CONFIDENCE_THRESHOLD = float(os.environ.get("FER_CONFIDENCE_THRESHOLD", 0.5))
+CONFIDENCE_THRESHOLD = float(os.environ.get("FER_CONFIDENCE_THRESHOLD", 0.2))  # Lowered to 0.2 for debugging
 
 # Emotions list
 EMOTIONS = ["angry", "disgust", "fear", "happy", "neutral", "sad", "surprise"]
@@ -94,9 +97,9 @@ class FERService:
         try:
             self.picam2 = Picamera2()
 
-            # Configure for video capture
+            # Configure for video capture (default RGBA format)
             config = self.picam2.create_preview_configuration(
-                main={"size": (640, 480), "format": "RGB888"}
+                main={"size": (640, 480)}
             )
             self.picam2.configure(config)
 
@@ -135,7 +138,10 @@ class FERService:
         )
 
         if len(faces) == 0:
+            logger.debug("No face detected in frame")
             return None
+
+        logger.debug(f"✓ Face detected (x={faces[0][0]}, y={faces[0][1]}, w={faces[0][2]}, h={faces[0][3]})")
 
         # Process first face only
         (x, y, w, h) = faces[0]
@@ -159,11 +165,18 @@ class FERService:
         # Get dominant emotion
         emotion_index = np.argmax(predictions)
         confidence = np.max(predictions)
+        emotion = EMOTIONS[emotion_index]
+
+        # Debug: Show all emotion scores
+        scores_str = ", ".join([f"{EMOTIONS[i]}: {predictions[i]:.3f}" for i in range(len(EMOTIONS))])
+        logger.debug(f"All scores: [{scores_str}]")
+        logger.debug(f"Prediction: {emotion} (confidence: {confidence:.2f})")
 
         # Only return if confidence is above threshold
         if confidence >= CONFIDENCE_THRESHOLD:
-            return EMOTIONS[emotion_index]
+            return emotion
         else:
+            logger.debug(f"⚠ Confidence too low ({confidence:.2f} < {CONFIDENCE_THRESHOLD})")
             return None
 
     def _monitor_loop(self):
@@ -171,21 +184,24 @@ class FERService:
         logger.info("FER monitoring started")
 
         frame_count = 0
+        last_status_time = time.time()
 
         try:
             while self.running:
-                # Capture frame
+                # Capture frame (returns RGBA array)
                 frame = self.picam2.capture_array()
 
-                # Convert RGB to BGR
-                frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+                # Convert RGBA to BGR
+                frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGBA2BGR)
 
                 # Skip frames for performance
                 if frame_count % FRAME_SKIP == 0:
+                    logger.debug(f"🔍 Processing frame {frame_count}, shape: {frame.shape}")
                     emotion = self.detect_emotion(frame_bgr)
+                    logger.debug(f"🔍 Detection result: {emotion}")
 
                     if emotion:
-                        logger.debug(f"Detected: {emotion}")
+                        logger.info(f"✅ Detected emotion: {emotion}")
 
                         # Check if emotion indicates frustration
                         if emotion in FRUSTRATION_EMOTIONS:
@@ -204,6 +220,11 @@ class FERService:
                                 self.frustration_counter = max(0, self.frustration_counter - 2)
 
                 frame_count += 1
+
+                # Periodic status update
+                if time.time() - last_status_time > 10:
+                    logger.info(f"📊 Status: {frame_count} frames processed, frustration counter: {self.frustration_counter}")
+                    last_status_time = time.time()
 
                 # Small delay
                 time.sleep(0.1)

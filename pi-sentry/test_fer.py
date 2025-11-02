@@ -1,6 +1,8 @@
 import cv2
 import numpy as np
 import tensorflow.lite as tflite
+from picamera2 import Picamera2
+import time
 
 # --- Load Models ---
 try:
@@ -28,64 +30,70 @@ except Exception as e:
     exit()
 
 
-# --- Start Camera ---
-# Using cv2.VideoCapture(0) is simpler for a test
-cap = cv2.VideoCapture(0)
-if not cap.isOpened():
-    print("Error: Cannot open camera.")
+# --- Start PiCamera2 ---
+try:
+    picam2 = Picamera2()
+    # Configure for preview (fast, relatively low res)
+    config = picam2.create_preview_configuration(main={"size": (640, 480)})
+    picam2.configure(config)
+    picam2.start()
+    print("Camera open using picamera2. Press Ctrl+C to quit.")
+    # Give the camera a moment to warm up
+    time.sleep(1)
+except Exception as e:
+    print(f"Error starting picamera2: {e}")
+    print("Is the camera properly enabled in 'raspi-config'?")
     exit()
 
-print("Camera open. Press 'q' to quit.")
-
+# --- Main Loop ---
 while True:
-    ret, frame = cap.read()
-    if not ret:
-        print("Error: Can't receive frame.")
+    try:
+        # Capture frame from picamera2
+        # capture_array() returns an RGBA array
+        frame = picam2.capture_array()
+
+        # Convert RGBA to BGR for OpenCV
+        frame = cv2.cvtColor(frame, cv2.COLOR_RGBA2BGR)
+
+        # Convert to grayscale for face detection
+        gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+
+        # Detect faces
+        faces = face_cascade.detectMultiScale(gray_frame, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30))
+
+        # Process each face
+        for (x, y, w, h) in faces:
+            # Extract face from BGR frame (color, not grayscale!)
+            face_roi_bgr = frame[y:y+h, x:x+w]
+
+            # --- Preprocess for FER Model ---
+            # 1. Resize to the model's expected input size
+            roi_resized = cv2.resize(face_roi_bgr, (IMG_WIDTH, IMG_HEIGHT))
+            # 2. Normalize pixel values (common for many models)
+            roi_normalized = roi_resized.astype('float32') / 255.0
+            # 3. Expand dimensions to match model input (1, H, W, 3)
+            roi_final = np.expand_dims(roi_normalized, axis=0)
+            # Note: No second expand_dims needed for color images (BGR = 3 channels)
+
+            # --- Run Inference ---
+            interpreter.set_tensor(input_details[0]['index'], roi_final)
+            interpreter.invoke()
+
+            # Get the prediction
+            predictions = interpreter.get_tensor(output_details[0]['index'])[0]
+
+            # Get the dominant emotion
+            emotion_index = np.argmax(predictions)
+            emotion_text = EMOTIONS[emotion_index]
+
+            # Print emotion to terminal
+            print(f"Detected: {emotion_text} ({np.max(predictions)*100:.2f}%)")
+
+        # Small delay so the terminal isn't spammed
+        time.sleep(0.1)
+
+    except KeyboardInterrupt:
         break
 
-    # Convert to grayscale for face detection
-    gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-
-    # Detect faces
-    faces = face_cascade.detectMultiScale(gray_frame, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30))
-
-    # Process each face
-    for (x, y, w, h) in faces:
-        # Draw a rectangle around the face (for our visual test)
-        cv2.rectangle(frame, (x, y), (x+w, y+h), (0, 255, 0), 2)
-
-        # Extract face from BGR frame (color, not grayscale!)
-        face_roi_bgr = frame[y:y+h, x:x+w]
-
-        # --- Preprocess for FER Model ---
-        # 1. Resize to the model's expected input size
-        roi_resized = cv2.resize(face_roi_bgr, (IMG_WIDTH, IMG_HEIGHT))
-        # 2. Normalize pixel values (common for many models)
-        roi_normalized = roi_resized.astype('float32') / 255.0
-        # 3. Expand dimensions to match model input (1, 48, 48, 3)
-        roi_final = np.expand_dims(roi_normalized, axis=0)
-        # Note: No second expand_dims needed for color images
-
-        # --- Run Inference ---
-        interpreter.set_tensor(input_details[0]['index'], roi_final)
-        interpreter.invoke()
-
-        # Get the prediction
-        predictions = interpreter.get_tensor(output_details[0]['index'])[0]
-
-        # Get the dominant emotion
-        emotion_index = np.argmax(predictions)
-        emotion_text = EMOTIONS[emotion_index]
-
-        # Print emotion to terminal
-        print(f"Detected: {emotion_text} ({np.max(predictions)*100:.2f}%)")
-
-    # We can't use cv2.imshow() on a headless Pi,
-    # but the print statements in the terminal are our test.
-    # This loop will run very fast.
-
-    # A 'q' key listener would require a display, 
-    # so for this test, just let it run for a bit and
-    # stop it with Ctrl+C in the terminal.
-
-cap.release()
+picam2.stop()
+print("\nCamera stopped.")

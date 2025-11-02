@@ -7,6 +7,21 @@ from flask import Flask, request, jsonify
 import requests
 from llm_router import LLMRouter
 import ocr_service
+import pyttsx3
+import os
+
+# Initialize TTS engine for laptop
+try:
+    tts_engine = pyttsx3.init()
+    tts_engine.setProperty('rate', 150)  # Speed of speech
+    tts_engine.setProperty('volume', 0.9)  # Volume (0.0 to 1.0)
+    print("TTS engine initialized for laptop speakers")
+except Exception as e:
+    print(f"WARNING: Could not initialize TTS: {e}")
+    tts_engine = None
+
+# Configuration - set to True to speak on laptop instead of Pi
+SPEAK_ON_LAPTOP = os.environ.get("SPEAK_ON_LAPTOP", "true").lower() == "true"
 
 # Flask app setup
 app = Flask(__name__)
@@ -88,26 +103,24 @@ def get_help():
         answer = llm_router.get_coding_help(code_text)
         print(f"LLM response: {answer}")
 
-        # Step 3: Send answer to Pi to speak
-        print("Step 3: Sending response to Pi...")
-        pi_response = send_to_pi(answer)
-
-        if pi_response:
-            print("SUCCESS: Response sent to Pi")
-            return jsonify({
-                "status": "success",
-                "ocr_length": len(code_text),
-                "response": answer,
-                "pi_status": "sent"
-            }), 200
+        # Step 3: Speak the answer
+        print("Step 3: Speaking response...")
+        if SPEAK_ON_LAPTOP:
+            # Speak on laptop speakers
+            speak_local(answer)
+            speak_status = "spoken_on_laptop"
         else:
-            print("WARNING: Failed to send to Pi, but processing succeeded")
-            return jsonify({
-                "status": "partial_success",
-                "ocr_length": len(code_text),
-                "response": answer,
-                "pi_status": "failed"
-            }), 200
+            # Send to Pi to speak
+            pi_response = send_to_pi(answer)
+            speak_status = "sent_to_pi" if pi_response else "failed"
+
+        print(f"SUCCESS: Response {speak_status}")
+        return jsonify({
+            "status": "success",
+            "ocr_length": len(code_text),
+            "response": answer,
+            "speak_status": speak_status
+        }), 200
 
     except Exception as e:
         error_msg = f"Error processing help request: {str(e)}"
@@ -222,6 +235,30 @@ def status():
         "port": LAPTOP_PORT,
         "llm_router": "initialized" if llm_router else "failed"
     }), 200
+
+
+def speak_local(text):
+    """
+    Speak text on laptop speakers using pyttsx3
+
+    Args:
+        text (str): Text to speak
+
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    if not tts_engine:
+        print("ERROR: TTS engine not initialized")
+        return False
+
+    try:
+        print(f"Speaking on laptop: '{text[:50]}...'")
+        tts_engine.say(text)
+        tts_engine.runAndWait()
+        return True
+    except Exception as e:
+        print(f"ERROR speaking: {e}")
+        return False
 
 
 def send_to_pi(text):

@@ -60,14 +60,33 @@ class ButtonListener:
     def _setup_gpio(self):
         """Set up GPIO pins for button"""
         try:
-            # Use BCM pin numbering
-            GPIO.setmode(GPIO.BCM)
+            if GPIO_LIB == 'gpiod':
+                # Raspberry Pi 5 - use gpiod
+                # Try to find the correct gpiochip
+                chip_found = False
+                for chip_name in ['/dev/gpiochip4', '/dev/gpiochip0', '/dev/gpiochip1']:
+                    try:
+                        self.chip = gpiod.Chip(chip_name)
+                        self.line = self.chip.get_line(BUTTON_PIN)
+                        self.line.request(consumer="button_listener", type=gpiod.LINE_REQ_EV_RISING_EDGE)
+                        logger.info(f"✅ GPIO initialized with gpiod ({chip_name}): Button on GPIO {BUTTON_PIN}")
+                        chip_found = True
+                        break
+                    except Exception as e:
+                        logger.debug(f"Failed to open {chip_name}: {e}")
+                        continue
 
-            # Set up GPIO 17 as input with pull-down resistor
-            # DFR0029 module outputs HIGH when pressed
-            GPIO.setup(BUTTON_PIN, GPIO.IN, pull_up_down=GPIO.PUD_DOWN)
+                if not chip_found:
+                    raise Exception("Could not find a valid gpiochip")
 
-            logger.info(f"✅ GPIO initialized: Button on GPIO {BUTTON_PIN}")
+            elif GPIO_LIB == 'RPi.GPIO':
+                # Older Raspberry Pi - use RPi.GPIO
+                GPIO.setmode(GPIO.BCM)
+                GPIO.setup(BUTTON_PIN, GPIO.IN, pull_up_down=GPIO.PUD_DOWN)
+                logger.info(f"✅ GPIO initialized with RPi.GPIO: Button on GPIO {BUTTON_PIN}")
+
+            else:
+                raise Exception("No GPIO library available (neither gpiod nor RPi.GPIO)")
 
         except Exception as e:
             logger.error(f"❌ Error setting up GPIO: {e}")
@@ -124,17 +143,25 @@ class ButtonListener:
 
     def _monitor_loop(self):
         """Main monitoring loop using edge detection"""
-        logger.info("Button monitoring started")
+        logger.info(f"Button monitoring started (using {GPIO_LIB})")
 
         try:
-            while self.running:
-                # Wait for rising edge (button press)
-                # This will block until button is pressed or timeout (1 second)
-                channel = GPIO.wait_for_edge(BUTTON_PIN, GPIO.RISING, timeout=1000)
+            if GPIO_LIB == 'gpiod':
+                # gpiod monitoring loop
+                while self.running:
+                    # Wait for event with timeout
+                    if self.line.event_wait(nsec=1000000000):  # 1 second timeout in nanoseconds
+                        event = self.line.event_read()
+                        if event.type == gpiod.LineEvent.RISING_EDGE:
+                            self._handle_button_press()
 
-                if channel is not None:
-                    # Button was pressed
-                    self._handle_button_press()
+            elif GPIO_LIB == 'RPi.GPIO':
+                # RPi.GPIO monitoring loop
+                while self.running:
+                    # Wait for rising edge (button press)
+                    channel = GPIO.wait_for_edge(BUTTON_PIN, GPIO.RISING, timeout=1000)
+                    if channel is not None:
+                        self._handle_button_press()
 
         except Exception as e:
             logger.error(f"Error in button monitoring loop: {e}")
@@ -169,7 +196,16 @@ class ButtonListener:
             self.thread.join(timeout=5)
 
         # Clean up GPIO
-        GPIO.cleanup()
+        try:
+            if GPIO_LIB == 'gpiod':
+                if hasattr(self, 'line'):
+                    self.line.release()
+                if hasattr(self, 'chip'):
+                    self.chip.close()
+            elif GPIO_LIB == 'RPi.GPIO':
+                GPIO.cleanup()
+        except Exception as e:
+            logger.warning(f"Error during GPIO cleanup: {e}")
 
         logger.info("✅ Button Listener stopped")
 
